@@ -1,0 +1,22 @@
+HomeTabView Logo 更新:
+第77-79行:
+舊: Image(systemName: "graduationcap.fill")
+    .font(.title)
+    .foregroundStyle(theme.accent.color)
+
+新: Image("AppLogo")
+    .resizable()
+    .aspectRatio(contentMode: .fit)
+    .frame(width: 50, height: 50)
+
+AboutView Logo 更新:
+第438-440行:
+舊: Image(systemName: "graduationcap.fill")
+    .font(.system(size: 60))
+    .foregroundStyle(.blue)
+
+新: Image("AppLogo")
+    .resizable()
+    .aspectRatio(contentMode: .fit)
+    .frame(width: 80, height: 80)
+

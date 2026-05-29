@@ -1,0 +1,276 @@
+# =========================================================
+# Cursor Rules — iOS SwiftUI Project: NCHUHelper
+# Purpose: Course planning (空堂/衝堂) + Campus navigation
+# Platform: iOS 17+, Xcode 15+, Swift 5.9, SwiftUI, MapKit
+# Architecture: SwiftUI + MVVM + small Utils (no 3rd-party)
+# =========================================================
+
+###########################################################
+## 0) GLOBAL PRINCIPLES｜全域原則
+###########################################################
+- Build from scratch. Do NOT assume existing files.
+- Single-responsibility files; short functions; clear naming.
+- Prefer Apple frameworks: Foundation, SwiftUI, MapKit, CoreLocation.
+- No third-party dependencies unless explicitly requested.
+- Fail gracefully: typed Error enums; no fatalError in production paths.
+- Comments explain WHY over WHAT; keep previews for all major views.
+- UI strings default to zh-Hant; code comments in English.
+- Accessibility matters: meaningful labels, Dynamic Type-friendly.
+
+Non-goals for MVP:
+- No login/backend/sync.
+- No background location; only “When In Use”.
+- No AR/室內導航；僅室外導航到大樓。
+
+###########################################################
+## 1) PROJECT LAYOUT｜目錄規範（必須遵守）
+###########################################################
+/Models              # Data models (Codable, Hashable)
+/ViewModels          # ObservableObject; business logic
+/Views               # SwiftUI screens & components
+/Utils               # Purist helpers (CSVImporter, formatters, validators)
+/Data                # Stores/Loaders (BuildingStore, CoursesStore)
+/Resources           # Seed JSON/CSV (Buildings.json, sample.csv)
+/Assets.xcassets     # Images & colors
+/PreviewContent      # Mock data for previews (optional)
+/Tests               # Unit tests (logic), UI tests (optional)
+
+File naming:
+- Views end with `View` (e.g., HomeView.swift)
+- ViewModels end with `VM` or `Store` (e.g., ScheduleVM.swift, CoursesStore.swift)
+- One top-level type per file.
+
+###########################################################
+## 2) APP SCOPE｜App 範圍
+###########################################################
+App name: NCHUHelper
+Goal: 幫大學生快速完成「選課空堂規劃 + 校園大樓導航」。
+
+Screens:
+- HomeView：兩張主卡片 → 「選課助手」與「校園地圖」。
+- SchedulePlannerView：匯入 CSV → 顯示課程、衝堂標示、空檔計算（min length 可調）。
+- CampusSearchView：搜尋大樓 code/name/aliases → 一鍵 Apple/Google Maps 導航。
+
+Permissions & Info.plist:
+- NSLocationWhenInUseUsageDescription = "用於校園地圖導航。"
+- LSApplicationQueriesSchemes = ["comgooglemaps"]
+
+Target: iOS 17+; Swift 5.9; SwiftUI; MapKit
+Localization: zh-Hant 初版即可；集中重複字串於 `UIStrings` 靜態常數（可選）
+
+###########################################################
+## 3) MODELS｜資料模型（固定介面）
+###########################################################
+# /Models/Course.swift
+struct Course: Identifiable, Codable, Hashable {
+  enum RequiredType: String, Codable { case 必修, 選修, 通識 }
+  let id: UUID
+  var name: String
+  var dept: String
+  var requiredType: RequiredType
+  var dayOfWeek: Int       // 1=Mon … 7=Sun
+  var periods: [Int]       // 1..N（每節）
+  var weeks: [Int]         // 1..18（學期週）
+  var buildingCode: String
+  var room: String
+  var instructor: String?
+  var credits: Int?
+}
+
+# /Models/Building.swift
+struct Building: Identifiable, Codable, Hashable {
+  let id: UUID
+  var code: String         // e.g., "工綜館"
+  var name: String         // e.g., "工程綜合館"
+  var aliases: [String]
+  var lat: Double
+  var lng: Double
+  var openHours: String?
+}
+
+###########################################################
+## 4) VIEWMODELS｜邏輯層合約
+###########################################################
+# /ViewModels/ScheduleVM.swift
+@MainActor final class ScheduleVM: ObservableObject {
+  @Published var courses: [Course] = []
+
+  /// Return pairs of conflicting courses (same day & overlapping periods).
+  func conflicts(in courses: [Course]) -> [(Course, Course)]
+
+  /// Convenience: set of course IDs that appear in any conflict pair.
+  func conflictedCourseIDs(in courses: [Course]) -> Set<UUID>
+
+  /// Compute contiguous free slots for a given day; drop intervals shorter than minLength.
+  func freeSlots(
+    courses: [Course],
+    on day: Int,
+    totalPeriods: ClosedRange<Int> = 1...14,
+    minLength: Int = 2
+  ) -> [ClosedRange<Int>]
+}
+
+# /Data/BuildingStore.swift
+@MainActor final class BuildingStore: ObservableObject {
+  @Published var all: [Building] = []
+  func load() throws  // Load Resources/Buildings.json; decode to all.
+  func search(matching keyword: String) -> [Building]  // code/name/aliases contains (case-insensitive)
+}
+
+# /Data/CoursesStore.swift（選做：持久化）
+@MainActor final class CoursesStore: ObservableObject {
+  @Published var courses: [Course] = []
+  func load() throws
+  func save() throws
+}
+
+###########################################################
+## 5) UTILS｜工具合約
+###########################################################
+# /Utils/CSVImporter.swift
+struct CSVImportResult { let courses: [Course]; let warnings: [String] }
+enum CSVImportError: Error { case badHeader, badRow(Int, String) }
+
+struct CSVImporter {
+  /// Parse CSV data into courses. Columns (fixed order):
+  /// name,dept,requiredType,dayOfWeek,periods,weeks,buildingCode,room,instructor,credits
+  /// periods/weeks separated by "|", e.g., "3|4|5"; requiredType in {必修, 選修, 通識}
+  static func parseCourses(from data: Data) throws -> CSVImportResult
+}
+
+# /Utils/FreeSlotFormatter.swift
+struct FreeSlotFormatter {
+  /// Convert daily slots mapping (day -> [range]) into human-readable zh-Hant string,
+  /// e.g., "週一：3–4、7–9\n週二：…"
+  static func formatDailySlots(_ dict: [Int: [ClosedRange<Int>]]) -> String
+}
+
+###########################################################
+## 6) VIEWS｜畫面需求
+###########################################################
+# /Views/HomeView.swift
+- NavigationStack + 2 Cards (選課助手 / 校園地圖)
+- 使用 SF Symbols + 簡短描述
+- #Preview with static preview models
+
+# /Views/SchedulePlannerView.swift
+- Buttons: 「匯入 CSV」、Stepper(最小空檔連續節數：預設2)
+- List: 課程（名稱/星期節次/必選通），若衝堂 → 顯示「⚠️ 衝堂」Tag 或紅色樣式
+- Result: 「本週空檔」區塊（使用 FreeSlotFormatter）
+- Search（可選）：依課名/教師關鍵字過濾
+- 使用 ScheduleVM（@StateObject），若採持久化則綁 CoursesStore
+
+# /Views/CampusSearchView.swift
+- SearchBar: 即時過濾 code/name/aliases
+- List: 顯示名稱、代號，按鈕「Apple Map」「Google Map」
+- Apple Map URL: http://maps.apple.com/?ll=lat,lng&q=name
+- Google Maps URL: comgooglemaps://?q=lat,lng(,name)；若 canOpenURL false → web fallback
+- 使用 BuildingStore（.task/.onAppear 時 load）
+
+全數視圖需提供 #Preview；預覽用固定 mock。
+
+###########################################################
+## 7) RESOURCES｜資源檔
+###########################################################
+/Resources/Buildings.json
+- 放 10–20 筆示例：{code,name,aliases[],lat,lng}
+- 太陽餅式假資料即可；後續可替換為真實校園座標。
+
+/Resources/sample_courses.csv（可選）
+- 範例列：
+  離散數學,資訊,必修,2,3|4,1|2|3|4|5,工綜館,204,張老師,3
+
+###########################################################
+## 8) INFO.PLIST & PERMISSIONS
+###########################################################
+- NSLocationWhenInUseUsageDescription = "用於校園地圖導航。"
+- LSApplicationQueriesSchemes = ["comgooglemaps"]
+- iPhone/iPad orientations: portrait + landscape (default fine)
+
+###########################################################
+## 9) TESTS｜測試
+###########################################################
+- Add unit tests under /Tests:
+  - CSV parsing: valid line, bad numbers, empty lines → warnings collected
+  - Conflict detection: same day overlap → conflict; different day → no conflict
+  - Free slots: edges (start/end), isolated occupied period, minLength filtering
+
+- Optional UI tests: smoke test navigation Home → Schedule/Campus.
+
+###########################################################
+## 10) CODING STANDARDS｜程式風格
+###########################################################
+- Swift 5.9; use async/await for async tasks
+- Prefer value types; Codable/Hashable for models
+- Use `guard` early returns; avoid deep nesting
+- No force-unwraps; use `if let`/`guard let` or throw
+- Minimal imports; mark ViewModels touching UI as `@MainActor`
+- `// MARK:` for structure; Docstring for public funcs
+
+Formatting:
+- 4-space indent; ~120 col soft wrap; trailing whitespace trimmed
+
+###########################################################
+## 11) PERFORMANCE & SAFETY
+###########################################################
+- Complexity: O(N log N) acceptable for 100–300 courses
+- Avoid heavy work on main thread; file IO off main if long-running
+- Memory: release temp buffers; avoid duplicating large arrays needlessly
+
+###########################################################
+## 12) UX & ACCESSIBILITY
+###########################################################
+- Buttons have text labels; not icon-only
+- Dynamic Type friendly; avoid fixed heights unless necessary
+- Color contrast readable; red tag for conflicts with text fallback
+
+###########################################################
+## 13) MILESTONES｜提交節點（Cursor 任務順序）
+###########################################################
+M1: 初始化專案與目錄；建立 App 入口（HomeView） + Dummy #Preview
+M2: 實作 Models；建立 ScheduleVM skeleton；加入 FreeSlotFormatter
+M3: CSVImporter → 匯入 CSV → 更新課程 → 基本 List 展示
+M4: 衝堂偵測 + UI 標示；空檔計算 + 顯示
+M5: BuildingStore 載入 Buildings.json；CampusSearchView 搜尋與導航；Info.plist 更新
+M6 (optional): CoursesStore 持久化；Tests 補齊；輕量 UI polish
+
+每一里程碑：提交變更檔案列表、主要類別/函式、測試方式說明。
+
+###########################################################
+## 14) COMMIT & PR STYLE｜提交規範
+###########################################################
+Conventional commits:
+- feat: add CSV importer
+- feat: conflicts detection in ScheduleVM
+- feat: campus search & navigation
+- fix: handle invalid CSV rows
+- refactor: extract FreeSlotFormatter
+- test: add unit tests for CSV/conflicts/free slots
+- docs: update README about Info.plist
+
+PR checklist:
+- [ ] Build passes (iOS 17 simulator)
+- [ ] SwiftUI previews compile
+- [ ] No new warnings
+- [ ] Tests added/updated for logic
+- [ ] Info.plist entries verified
+
+###########################################################
+## 15) CURSOR TASK SHORTCUTS｜常用任務命令（可複製到 Chat）
+###########################################################
+- “Create full Xcode SwiftUI project structure per rules; add HomeView with two cards; wire NavigationStack; add #Preview.”
+- “Implement CSVImporter.parseCourses(from:), wire .fileImporter into SchedulePlannerView, show result list, and warnings handling.”
+- “In ScheduleVM, implement conflicts(...) and conflictedCourseIDs(...); mark conflicting rows in SchedulePlannerView with red Tag.”
+- “Implement freeSlots(...) and FreeSlotFormatter; add Stepper(minLength) and daily summary UI.”
+- “Add BuildingStore to load Resources/Buildings.json; implement search by code/name/aliases; add Apple/Google Maps open; update Info.plist with LSApplicationQueriesSchemes.”
+- “(Optional) Implement CoursesStore JSON persistence; load on app start; save after CSV import; add unit tests.”
+
+###########################################################
+## 16) DONE DEFINITION｜完成定義
+###########################################################
+- App 可在 iOS 17 模擬器啟動；Home → Schedule/Campus 正常互動
+- 校園頁：可搜尋大樓並成功開啟導航（Google Maps 未安裝時走 Web）
+- 主要邏輯含單元測試；視圖有有效 #Preview
+- 無重大警告；程式碼結構遵守本規範
+
+# =============== End of Cursor Rules =====================
